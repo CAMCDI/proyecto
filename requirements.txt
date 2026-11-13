@@ -1,0 +1,21 @@
+# Dependencias del proyecto: Sistema de Monitoreo y Administración Remota
+# Versiones pinneadas según Requisito 18.8 del documento de requisitos.
+# Python 3.11+ requerido.
+
+# Interfaz gráfica (servidor y cliente)
+PyQt6>=6.6.0
+
+# Cifrado TLS y operaciones criptográficas
+cryptography>=41.0.0
+
+# Hashing de contraseñas y tokens de autenticación (argon2id)
+argon2-cffi>=23.0.0
+
+# Métricas del sistema (CPU, RAM) en el cliente
+psutil>=5.9.0
+
+# Captura de pantalla en sistemas X11
+mss>=9.0.0
+
+# Procesamiento de imágenes (escalado y compresión JPEG)
+Pillow>=10.0.0

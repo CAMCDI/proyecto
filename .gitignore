@@ -1,0 +1,62 @@
+# --- Entorno virtual ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- Bytecode y caché de Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Distribución y empaquetado ---
+build/
+dist/
+*.egg-info/
+*.egg
+wheels/
+
+# --- Herramientas de pruebas y cobertura ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# --- Variables de entorno y secretos ---
+.env
+.env.*
+*.pem
+
+# --- Certificados y claves TLS (NUNCA versionar) ---
+certs/
+*.crt
+*.key
+*.csr
+*.srl
+*.p12
+
+# --- Logs generados en tiempo de ejecución ---
+logs/
+*.log
+
+# --- Configuración local generada por el script de instalación ---
+# Los archivos *_config.json contienen credenciales y no deben versionarse.
+*_config.json
+
+# --- IDEs y editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Tipo de sistema ---
+mypy.ini
+.mypy_cache/

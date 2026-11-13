@@ -1,0 +1,18 @@
+# Dependencias de desarrollo y pruebas.
+# Instalar con: pip install -r requirements-dev.txt
+# (incluye automáticamente las dependencias de producción vía -r requirements.txt)
+
+-r requirements.txt
+
+# Framework de pruebas
+pytest>=7.4.0
+
+# Pruebas basadas en propiedades (mínimo 100 iteraciones por propiedad)
+# Ver estrategia de pruebas del documento de diseño.
+hypothesis>=6.90.0
+
+# Generación de informes de cobertura (opcional)
+pytest-cov>=4.1.0
+
+# Integración de pytest con asyncio (para pruebas asíncronas)
+pytest-asyncio>=0.21.0

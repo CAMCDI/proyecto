@@ -1,0 +1,5 @@
+# Archivo marcador para mantener el directorio scripts/ en el control de versiones.
+# Los scripts de shell se añaden en tareas posteriores:
+#   - generate_certs.sh: generación de certificados TLS (Req 11.2, 11.3).
+#   - install.sh: instalación de dependencias y configuración (Req 18.6, 18.8).
+#   - setup_helper.sh: configuración de sudoers/systemd del helper (Req 13.8).
