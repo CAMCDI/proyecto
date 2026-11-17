@@ -1,7 +1,9 @@
 """Interfaz gráfica del servidor — PyQt6.
 
-Panel principal con sidebar de 3 slots de clientes y pestañas de control:
-Pantalla, Chat, Archivos, Control, Red y Log de acciones.
+Panel principal con barra lateral de 3 slots de clientes y pestañas de control:
+Pantalla, Chat, Archivos, Control, Red y Log de auditoria.
+Diseñada sin emojis, con controles directos e intuitivos y visor de pantalla
+con relacion de aspecto fija y controlada.
 
 Requisitos: 15.1, 15.2, 15.10, 4.1-4.10, 1.1-1.7, 3.1-3.10, 2.1-2.10,
             6.1-6.2, 7.1-7.2, 8.1-8.3, 9.1-9.3, 10.1-10.2, 5.1-5.5.
@@ -10,22 +12,24 @@ Requisitos: 15.1, 15.2, 15.10, 4.1-4.10, 1.1-1.7, 3.1-3.10, 2.1-2.10,
 from __future__ import annotations
 
 import base64
+import os
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QColor, QFont, QImage, QPixmap, QPainter
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl
+from PyQt6.QtGui import QColor, QFont, QImage, QPixmap, QPainter, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QMainWindow, QMessageBox, QProgressBar,
-    QPushButton, QScrollArea, QSlider, QSizePolicy, QSpinBox,
-    QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
+    QPushButton, QSlider, QSizePolicy, QSpinBox,
+    QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
     QVBoxLayout, QWidget, QComboBox, QHeaderView,
 )
 
 # ---------------------------------------------------------------------------
-# Paleta de colores (tema oscuro)
+# Estilo de la interfaz (Tema Oscuro Profesional)
 # ---------------------------------------------------------------------------
 STYLE_SHEET = """
 QMainWindow, QWidget {
@@ -41,21 +45,24 @@ QTabWidget::pane {
 QTabBar::tab {
     background-color: #181825;
     color: #a6adc8;
-    padding: 8px 16px;
+    padding: 8px 18px;
     border: 1px solid #313244;
     border-bottom: none;
+    font-weight: 500;
 }
 QTabBar::tab:selected {
     background-color: #1e1e2e;
-    color: #cdd6f4;
+    color: #89b4fa;
     border-bottom: 2px solid #89b4fa;
+    font-weight: bold;
 }
 QPushButton {
     background-color: #313244;
     color: #cdd6f4;
     border: 1px solid #45475a;
     border-radius: 6px;
-    padding: 6px 14px;
+    padding: 7px 16px;
+    font-weight: 500;
 }
 QPushButton:hover {
     background-color: #45475a;
@@ -63,19 +70,42 @@ QPushButton:hover {
 QPushButton:pressed {
     background-color: #585b70;
 }
+QPushButton#primary {
+    background-color: #89b4fa;
+    color: #11111b;
+    font-weight: bold;
+    border: none;
+}
+QPushButton#primary:hover {
+    background-color: #b4befe;
+}
 QPushButton#danger {
     background-color: #f38ba8;
-    color: #1e1e2e;
+    color: #11111b;
+    font-weight: bold;
+    border: none;
 }
 QPushButton#danger:hover {
     background-color: #eb6f92;
+}
+QPushButton#success {
+    background-color: #a6e3a1;
+    color: #11111b;
+    font-weight: bold;
+    border: none;
+}
+QPushButton#success:hover {
+    background-color: #94e2d5;
 }
 QLineEdit, QTextEdit, QComboBox, QSpinBox {
     background-color: #181825;
     color: #cdd6f4;
     border: 1px solid #313244;
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 5px 9px;
+}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border: 1px solid #89b4fa;
 }
 QListWidget, QTableWidget {
     background-color: #181825;
@@ -87,39 +117,20 @@ QListWidget, QTableWidget {
 QHeaderView::section {
     background-color: #313244;
     color: #cdd6f4;
-    padding: 4px;
+    padding: 6px;
     border: 1px solid #45475a;
-}
-QSlider::groove:horizontal {
-    height: 6px;
-    background: #313244;
-    border-radius: 3px;
-}
-QSlider::handle:horizontal {
-    background: #89b4fa;
-    width: 14px;
-    height: 14px;
-    margin: -4px 0;
-    border-radius: 7px;
+    font-weight: bold;
 }
 QProgressBar {
-    background-color: #313244;
-    border: none;
+    background-color: #181825;
+    border: 1px solid #313244;
     border-radius: 4px;
     text-align: center;
     color: #cdd6f4;
 }
 QProgressBar::chunk {
     background-color: #89b4fa;
-    border-radius: 4px;
-}
-QScrollBar:vertical {
-    background: #181825;
-    width: 8px;
-}
-QScrollBar::handle:vertical {
-    background: #45475a;
-    border-radius: 4px;
+    border-radius: 3px;
 }
 """
 
@@ -129,7 +140,6 @@ COLOR_SELECTED = "#89b4fa"
 
 
 def _make_status_pixmap(color: str, size: int = 14) -> QPixmap:
-    """Crea un pixmap circular del color dado para el indicador de estado."""
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pix)
@@ -142,15 +152,60 @@ def _make_status_pixmap(color: str, size: int = 14) -> QPixmap:
 
 
 # ---------------------------------------------------------------------------
+# Visor de Pantalla Remota (Sin bucles de zoom, centrado y aspect ratio fijo)
+# ---------------------------------------------------------------------------
+
+class ScreenViewer(QWidget):
+    """Visor de pantalla remota profesional.
+
+    Mantiene la relación de aspecto sin cambiar el tamaño del layout de Qt,
+    evitando por completo el efecto de zoom infinito o crecimiento descontrolado.
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setMinimumSize(320, 240)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._pixmap: Optional[QPixmap] = None
+        self._placeholder: str = "Seleccione un cliente y presione 'Iniciar Streaming'"
+
+    def set_pixmap(self, pixmap: QPixmap) -> None:
+        self._pixmap = pixmap
+        self.update()
+
+    def set_placeholder(self, text: str) -> None:
+        self._placeholder = text
+        self._pixmap = None
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor("#11111b"))
+
+        if self._pixmap and not self._pixmap.isNull():
+            # Escala manteniendo la relacion de aspecto dentro de la ventana actual
+            scaled = self._pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            # Centra la imagen
+            x = (self.width() - scaled.width()) // 2
+            y = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+        else:
+            painter.setPen(QColor("#6c7086"))
+            painter.setFont(QFont("Segoe UI", 12))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._placeholder)
+
+
+# ---------------------------------------------------------------------------
 # ClientSlot
 # ---------------------------------------------------------------------------
 
 class ClientSlot(QFrame):
-    """Slot individual en el panel de clientes (uno por cada máquina).
-
-    Requisito: 4.1-4.8.
-    """
-    clicked = pyqtSignal(int)   # emite slot_index
+    """Slot de cliente en la barra lateral."""
+    clicked = pyqtSignal(int)
 
     def __init__(self, slot_index: int, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -161,14 +216,7 @@ class ClientSlot(QFrame):
 
     def _setup_ui(self) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: #181825;
-                border: 1px solid #313244;
-                border-radius: 8px;
-                margin: 2px;
-            }}
-        """)
+        self._update_border()
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         layout = QVBoxLayout(self)
         layout.setSpacing(4)
@@ -181,7 +229,7 @@ class ClientSlot(QFrame):
         self._status_icon.setFixedSize(14, 14)
         header.addWidget(self._status_icon)
 
-        self._hostname_label = QLabel(f"Slot {self.slot_index + 1} — Libre")
+        self._hostname_label = QLabel(f"Slot {self.slot_index + 1} - Libre")
         self._hostname_label.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         header.addWidget(self._hostname_label)
         header.addStretch()
@@ -191,26 +239,21 @@ class ClientSlot(QFrame):
         self._thumbnail = QLabel()
         self._thumbnail.setFixedSize(160, 90)
         self._thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._thumbnail.setStyleSheet("background-color: #11111b; border-radius: 4px;")
+        self._thumbnail.setStyleSheet("background-color: #11111b; border-radius: 4px; color: #6c7086;")
         self._thumbnail.setText("Sin señal")
         layout.addWidget(self._thumbnail, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Info
-        self._ip_label = QLabel("IP: —")
-        self._os_label = QLabel("OS: —")
-        self._cpu_label = QLabel("CPU: —")
-        self._ram_label = QLabel("RAM: —")
+        self._ip_label = QLabel("IP: --")
+        self._os_label = QLabel("SO: --")
+        self._cpu_label = QLabel("CPU: --")
+        self._ram_label = QLabel("RAM: --")
         for lbl in (self._ip_label, self._os_label, self._cpu_label, self._ram_label):
             lbl.setStyleSheet("color: #a6adc8; font-size: 11px;")
             layout.addWidget(lbl)
 
-    def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        if self._client_id:
-            self.clicked.emit(self.slot_index)
-
-    def set_selected(self, selected: bool) -> None:
-        self._selected = selected
-        border_color = COLOR_SELECTED if selected else "#313244"
+    def _update_border(self) -> None:
+        border_color = COLOR_SELECTED if self._selected else "#313244"
         self.setStyleSheet(f"""
             QFrame {{
                 background-color: #181825;
@@ -220,32 +263,37 @@ class ClientSlot(QFrame):
             }}
         """)
 
+    def mousePressEvent(self, event) -> None:
+        self.clicked.emit(self.slot_index)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._update_border()
+
     def update_data(self, session_data: dict) -> None:
-        """Actualiza los datos mostrados en el slot."""
         connected = session_data.get("connected", False)
         self._client_id = session_data.get("client_id") if connected else None
         hostname = session_data.get("hostname", f"Slot {self.slot_index + 1}")
-        ip = session_data.get("ip_address", "—")
+        ip = session_data.get("ip_address", "--")
         os_info = session_data.get("os_info", {})
-        os_name = os_info.get("os_name", "—")
+        os_name = os_info.get("os_name", "--")
         metrics = session_data.get("metrics", {})
-        cpu = metrics.get("cpu_percent", "—")
-        ram = metrics.get("memory_percent", "—")
+        cpu = metrics.get("cpu_percent", "--")
+        ram = metrics.get("memory_percent", "--")
 
         color = COLOR_CONNECTED if connected else COLOR_DISCONNECTED
         self._status_icon.setPixmap(_make_status_pixmap(color))
-        self._hostname_label.setText(hostname if connected else f"Slot {self.slot_index + 1} — Libre")
+        self._hostname_label.setText(hostname if connected else f"Slot {self.slot_index + 1} - Libre")
         self._ip_label.setText(f"IP: {ip}")
-        self._os_label.setText(f"OS: {os_name}")
-        self._cpu_label.setText(f"CPU: {cpu}%" if isinstance(cpu, (int, float)) else "CPU: —")
-        self._ram_label.setText(f"RAM: {ram}%" if isinstance(ram, (int, float)) else "RAM: —")
+        self._os_label.setText(f"SO: {os_name}")
+        self._cpu_label.setText(f"CPU: {cpu}%" if isinstance(cpu, (int, float)) else "CPU: --")
+        self._ram_label.setText(f"RAM: {ram}%" if isinstance(ram, (int, float)) else "RAM: --")
 
         if not connected:
             self._thumbnail.setText("Sin señal")
             self._thumbnail.setPixmap(QPixmap())
 
     def update_thumbnail(self, jpeg_b64: str) -> None:
-        """Actualiza la miniatura con una imagen JPEG en base64."""
         try:
             data = base64.b64decode(jpeg_b64)
             image = QImage.fromData(data)
@@ -267,11 +315,8 @@ class ClientSlot(QFrame):
 # ---------------------------------------------------------------------------
 
 class ClientPanel(QWidget):
-    """Panel lateral con 3 slots de clientes.
-
-    Requisito: 4.1, 4.2.
-    """
-    client_selected = pyqtSignal(str)   # emite client_id
+    """Panel lateral con los 3 slots de clientes."""
+    client_selected = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -280,9 +325,9 @@ class ClientPanel(QWidget):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        self.setFixedWidth(210)
+        self.setFixedWidth(220)
         layout = QVBoxLayout(self)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
         layout.setContentsMargins(6, 6, 6, 6)
 
         title = QLabel("Clientes Conectados")
@@ -300,6 +345,12 @@ class ClientPanel(QWidget):
         layout.addStretch()
 
     def _on_slot_clicked(self, slot_index: int) -> None:
+        slot = self._slots[slot_index]
+        client_id = slot.get_client_id()
+        if client_id:
+            self.select_slot(slot_index)
+
+    def select_slot(self, slot_index: int) -> None:
         slot = self._slots[slot_index]
         client_id = slot.get_client_id()
         if client_id:
@@ -325,11 +376,8 @@ class ClientPanel(QWidget):
 # ---------------------------------------------------------------------------
 
 class ScreenTab(QWidget):
-    """Pestaña de streaming de pantalla remota.
-
-    Requisito: 1.1, 1.4, 1.5, 1.6, 1.7.
-    """
-    screen_start_requested = pyqtSignal(str, int, int)   # resolution, quality, fps
+    """Pestaña de visualización de escritorio remoto."""
+    screen_start_requested = pyqtSignal(str, int, int)
     screen_stop_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
@@ -343,17 +391,14 @@ class ScreenTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
 
-        # Área de visualización
-        self._screen_label = QLabel("Seleccione un cliente para iniciar el streaming")
-        self._screen_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._screen_label.setStyleSheet("background-color: #11111b; border-radius: 6px; color: #6c7086;")
-        self._screen_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        layout.addWidget(self._screen_label)
+        # Visor de pantalla personalizado
+        self._viewer = ScreenViewer()
+        layout.addWidget(self._viewer)
 
         # Controles
         controls = QHBoxLayout()
 
-        controls.addWidget(QLabel("Resolución:"))
+        controls.addWidget(QLabel("Resolucion:"))
         self._resolution_combo = QComboBox()
         self._resolution_combo.addItems(["640x480", "800x600", "1024x768", "Nativa"])
         self._resolution_combo.setCurrentIndex(2)
@@ -361,23 +406,25 @@ class ScreenTab(QWidget):
 
         controls.addWidget(QLabel("Calidad:"))
         self._quality_slider = QSlider(Qt.Orientation.Horizontal)
-        self._quality_slider.setRange(50, 90)
+        self._quality_slider.setRange(40, 90)
         self._quality_slider.setValue(70)
         self._quality_slider.setFixedWidth(100)
         controls.addWidget(self._quality_slider)
+
         self._quality_label = QLabel("70")
         self._quality_slider.valueChanged.connect(lambda v: self._quality_label.setText(str(v)))
         controls.addWidget(self._quality_label)
 
-        self._toggle_btn = QPushButton("▶ Iniciar Streaming")
+        self._toggle_btn = QPushButton("Iniciar Streaming")
+        self._toggle_btn.setObjectName("primary")
         self._toggle_btn.clicked.connect(self._toggle_streaming)
         controls.addWidget(self._toggle_btn)
 
-        self._fps_label = QLabel("FPS: —")
-        self._fps_label.setStyleSheet("color: #a6e3a1;")
+        self._fps_label = QLabel("FPS: --")
+        self._fps_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         controls.addWidget(self._fps_label)
 
-        self._bw_label = QLabel("BW: —")
+        self._bw_label = QLabel("Ancho de banda: --")
         self._bw_label.setStyleSheet("color: #89b4fa;")
         controls.addWidget(self._bw_label)
 
@@ -387,32 +434,28 @@ class ScreenTab(QWidget):
     def _toggle_streaming(self) -> None:
         self._streaming = not self._streaming
         if self._streaming:
-            self._toggle_btn.setText("⬛ Detener Streaming")
+            self._toggle_btn.setText("Detener Streaming")
+            self._toggle_btn.setObjectName("danger")
+            self._toggle_btn.setStyle(self._toggle_btn.style())
             res_str = self._resolution_combo.currentText()
-            if res_str == "Nativa":
-                resolution = None
-            else:
-                w, h = res_str.split("x")
-                resolution = f"{w}x{h}"
+            resolution = None if res_str == "Nativa" else res_str
             quality = self._quality_slider.value()
             self.screen_start_requested.emit(resolution or "native", quality, 8)
         else:
-            self._toggle_btn.setText("▶ Iniciar Streaming")
+            self._toggle_btn.setText("Iniciar Streaming")
+            self._toggle_btn.setObjectName("primary")
+            self._toggle_btn.setStyle(self._toggle_btn.style())
             self.screen_stop_requested.emit()
-            self._screen_label.setText("Streaming detenido")
-            self._fps_label.setText("FPS: —")
+            self._viewer.set_placeholder("Streaming detenido")
+            self._fps_label.setText("FPS: --")
+            self._bw_label.setText("Ancho de banda: --")
 
     def display_frame(self, jpeg_b64: str) -> None:
-        """Decodifica y muestra un frame JPEG en base64."""
         try:
             data = base64.b64decode(jpeg_b64)
             image = QImage.fromData(data)
-            pix = QPixmap.fromImage(image).scaled(
-                self._screen_label.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._screen_label.setPixmap(pix)
+            pix = QPixmap.fromImage(image)
+            self._viewer.set_pixmap(pix)
             self._frame_count += 1
 
             now = datetime.now()
@@ -420,9 +463,8 @@ class ScreenTab(QWidget):
             if elapsed >= 1.0:
                 fps = self._frame_count / elapsed
                 self._fps_label.setText(f"FPS: {fps:.1f}")
-                # Aproximación de BW basada en tamaño del frame.
-                bw_kbs = len(data) / 1024 * fps
-                self._bw_label.setText(f"BW: {bw_kbs:.0f} KB/s")
+                bw_kbs = (len(data) / 1024) * fps
+                self._bw_label.setText(f"Ancho de banda: {bw_kbs:.0f} KB/s")
                 self._frame_count = 0
                 self._last_fps_time = now
         except Exception:
@@ -430,11 +472,12 @@ class ScreenTab(QWidget):
 
     def reset(self) -> None:
         self._streaming = False
-        self._toggle_btn.setText("▶ Iniciar Streaming")
-        self._screen_label.setText("Seleccione un cliente para iniciar el streaming")
-        self._screen_label.setPixmap(QPixmap())
-        self._fps_label.setText("FPS: —")
-        self._bw_label.setText("BW: —")
+        self._toggle_btn.setText("Iniciar Streaming")
+        self._toggle_btn.setObjectName("primary")
+        self._toggle_btn.setStyle(self._toggle_btn.style())
+        self._viewer.set_placeholder("Seleccione un cliente y presione 'Iniciar Streaming'")
+        self._fps_label.setText("FPS: --")
+        self._bw_label.setText("Ancho de banda: --")
 
 
 # ---------------------------------------------------------------------------
@@ -442,13 +485,8 @@ class ScreenTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class ChatTab(QWidget):
-    """Pestaña de chat bidireccional con el cliente.
-
-    Requisito: 3.1, 3.3-3.8, 3.10.
-    """
-    message_sent = pyqtSignal(str)   # emite el texto del mensaje
-
-    MAX_HISTORY = 200
+    """Pestaña de chat bidireccional en tiempo real."""
+    message_sent = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -464,11 +502,12 @@ class ChatTab(QWidget):
 
         input_row = QHBoxLayout()
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Escriba un mensaje... (máx. 1000 caracteres)")
+        self._input.setPlaceholderText("Escriba un mensaje para el cliente...")
         self._input.returnPressed.connect(self._send)
         input_row.addWidget(self._input)
 
-        send_btn = QPushButton("Enviar")
+        send_btn = QPushButton("Enviar Mensaje")
+        send_btn.setObjectName("primary")
         send_btn.clicked.connect(self._send)
         input_row.addWidget(send_btn)
 
@@ -479,23 +518,19 @@ class ChatTab(QWidget):
         if not text:
             return
         if len(text) > 1000:
-            QMessageBox.warning(self, "Mensaje muy largo", "El mensaje no puede superar 1000 caracteres.")
+            QMessageBox.warning(self, "Mensaje largo", "El mensaje no puede superar 1000 caracteres.")
             return
         self._input.clear()
         self.message_sent.emit(text)
         self.add_message("Servidor", text)
 
     def add_message(self, sender: str, message: str) -> None:
-        """Agrega un mensaje al historial con formato [HH:MM:SS] Emisor: msg."""
         ts = datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}] {sender}: {message}"
         self._history.append(line)
-        if len(self._history) > self.MAX_HISTORY:
-            self._history.pop(0)
         self._chat_area.append(line)
-        self._chat_area.verticalScrollBar().setValue(
-            self._chat_area.verticalScrollBar().maximum()
-        )
+        sb = self._chat_area.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def clear_history(self) -> None:
         self._history.clear()
@@ -507,90 +542,96 @@ class ChatTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class FilesTab(QWidget):
-    """Pestaña de transferencia de archivos.
-
-    Requisito: 2.1, 2.2, 2.6, 2.10.
-    """
-    send_file_requested = pyqtSignal(str)         # filepath
-    receive_file_requested = pyqtSignal(str)      # save_path
+    """Pestaña de transferencia de archivos simplificada y directa."""
+    send_file_requested = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self._download_dir = str(Path.home() / "Descargas")
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # --- Enviar archivo ---
-        send_group = QFrame()
-        send_group.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 4px; }")
-        sg_layout = QVBoxLayout(send_group)
-        sg_layout.addWidget(QLabel("📤  Enviar Archivo al Cliente"))
+        # Enviar archivo
+        send_frame = QFrame()
+        send_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 8px; }")
+        sf_layout = QVBoxLayout(send_frame)
 
-        row = QHBoxLayout()
-        self._send_path = QLineEdit()
-        self._send_path.setPlaceholderText("Ruta del archivo a enviar...")
-        row.addWidget(self._send_path)
-        browse_btn = QPushButton("Examinar")
-        browse_btn.clicked.connect(self._browse_send)
-        row.addWidget(browse_btn)
-        sg_layout.addLayout(row)
+        sf_layout.addWidget(QLabel("Enviar Archivo al Cliente Seleccionado:"))
+        row_send = QHBoxLayout()
+        select_btn = QPushButton("Seleccionar y Enviar Archivo...")
+        select_btn.setObjectName("primary")
+        select_btn.clicked.connect(self._select_and_send)
+        row_send.addWidget(select_btn)
 
-        send_btn = QPushButton("Enviar")
-        send_btn.clicked.connect(lambda: self.send_file_requested.emit(self._send_path.text()))
-        sg_layout.addWidget(send_btn)
-        layout.addWidget(send_group)
+        self._selected_file_label = QLabel("Ningun archivo seleccionado")
+        self._selected_file_label.setStyleSheet("color: #a6adc8;")
+        row_send.addWidget(self._selected_file_label)
+        row_send.addStretch()
+        sf_layout.addLayout(row_send)
+        layout.addWidget(send_frame)
 
-        # --- Recibir archivo ---
-        recv_group = QFrame()
-        recv_group.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 4px; }")
-        rg_layout = QVBoxLayout(recv_group)
-        rg_layout.addWidget(QLabel("📥  Solicitar Archivo del Cliente"))
+        # Progreso de transferencia
+        prog_frame = QFrame()
+        prog_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 8px; }")
+        pf_layout = QVBoxLayout(prog_frame)
+        pf_layout.addWidget(QLabel("Estado de Transferencia:"))
 
-        row2 = QHBoxLayout()
-        self._recv_path = QLineEdit()
-        self._recv_path.setPlaceholderText("Directorio de destino...")
-        row2.addWidget(self._recv_path)
-        browse_recv = QPushButton("Examinar")
-        browse_recv.clicked.connect(self._browse_recv)
-        row2.addWidget(browse_recv)
-        rg_layout.addLayout(row2)
-
-        recv_btn = QPushButton("Solicitar Archivo")
-        recv_btn.clicked.connect(lambda: self.receive_file_requested.emit(self._recv_path.text()))
-        rg_layout.addWidget(recv_btn)
-        layout.addWidget(recv_group)
-
-        # --- Progreso ---
         self._progress_bar = QProgressBar()
         self._progress_bar.setValue(0)
-        self._speed_label = QLabel("Velocidad: —")
-        self._eta_label = QLabel("ETA: —")
-        layout.addWidget(self._progress_bar)
+        pf_layout.addWidget(self._progress_bar)
 
-        prog_row = QHBoxLayout()
-        prog_row.addWidget(self._speed_label)
-        prog_row.addStretch()
-        prog_row.addWidget(self._eta_label)
-        layout.addLayout(prog_row)
+        row_info = QHBoxLayout()
+        self._transfer_status_label = QLabel("Sin transferencias activas")
+        self._transfer_status_label.setStyleSheet("color: #a6adc8;")
+        row_info.addWidget(self._transfer_status_label)
+        row_info.addStretch()
 
-        layout.addStretch()
+        open_dir_btn = QPushButton("Abrir Carpeta de Descargas")
+        open_dir_btn.clicked.connect(self._open_downloads)
+        row_info.addWidget(open_dir_btn)
+        pf_layout.addLayout(row_info)
+        layout.addWidget(prog_frame)
 
-    def _browse_send(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Seleccionar archivo a enviar")
-        if path:
-            self._send_path.setText(path)
+        # Historial de transferencias
+        layout.addWidget(QLabel("Historial de Transferencias:"))
+        self._transfer_table = QTableWidget(0, 4)
+        self._transfer_table.setHorizontalHeaderLabels(["Fecha", "Archivo", "Tipo", "Estado"])
+        self._transfer_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._transfer_table.setAlternatingRowColors(True)
+        self._transfer_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self._transfer_table)
 
-    def _browse_recv(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Seleccionar directorio de destino")
-        if path:
-            self._recv_path.setText(path)
+    def _select_and_send(self) -> None:
+        filepath, _ = QFileDialog.getOpenFileName(self, "Seleccionar archivo para enviar al cliente")
+        if filepath:
+            filename = Path(filepath).name
+            self._selected_file_label.setText(f"Enviando: {filename}")
+            self.send_file_requested.emit(filepath)
+            self.add_log_transfer(filename, "Envio", "Iniciando...")
 
-    def update_progress(self, percent: float, speed: str = "—", eta: str = "—") -> None:
+    def _open_downloads(self) -> None:
+        p = Path(self._download_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+
+    def update_progress(self, percent: float, info: str = "", speed: str = "") -> None:
         self._progress_bar.setValue(int(percent))
-        self._speed_label.setText(f"Velocidad: {speed}")
-        self._eta_label.setText(f"ETA: {eta}")
+        text = info if info else f"{percent:.1f}%"
+        self._transfer_status_label.setText(text)
+        if percent >= 100:
+            self._selected_file_label.setText("Transferencia completada")
+
+    def add_log_transfer(self, filename: str, tipo: str, status: str) -> None:
+        row = self._transfer_table.rowCount()
+        self._transfer_table.insertRow(row)
+        ts = datetime.now().strftime("%H:%M:%S")
+        for col, text in enumerate([ts, filename, tipo, status]):
+            item = QTableWidgetItem(text)
+            self._transfer_table.setItem(row, col, item)
+        self._transfer_table.scrollToBottom()
 
 
 # ---------------------------------------------------------------------------
@@ -598,13 +639,10 @@ class FilesTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class ControlTab(QWidget):
-    """Pestaña de control de entrada y energía.
-
-    Requisito: 6.1-6.2, 7.1-7.2, 8.1-8.3.
-    """
+    """Pestaña de control de teclado, mouse y apagado remoto."""
     input_lock_requested = pyqtSignal()
     input_unlock_requested = pyqtSignal()
-    shutdown_requested = pyqtSignal(int)   # countdown seconds
+    shutdown_requested = pyqtSignal(int)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -614,43 +652,47 @@ class ControlTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
 
-        # -- Control de entrada --
+        # Control de entrada
         input_frame = QFrame()
-        input_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 4px; }")
+        input_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 10px; }")
         if_layout = QVBoxLayout(input_frame)
-        if_layout.addWidget(QLabel("🖱️  Control de Dispositivos de Entrada"))
+        if_layout.addWidget(QLabel("Control de Dispositivos de Entrada (Teclado y Mouse):"))
 
-        self._lock_state_label = QLabel("Estado: Desbloqueado")
-        self._lock_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+        self._lock_state_label = QLabel("Estado actual: Desbloqueado")
+        self._lock_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 14px;")
         if_layout.addWidget(self._lock_state_label)
 
         btn_row = QHBoxLayout()
-        lock_btn = QPushButton("🔒 Bloquear Teclado/Mouse")
+        lock_btn = QPushButton("Bloquear Teclado y Mouse")
+        lock_btn.setObjectName("danger")
         lock_btn.clicked.connect(self.input_lock_requested.emit)
         btn_row.addWidget(lock_btn)
 
-        unlock_btn = QPushButton("🔓 Desbloquear Teclado/Mouse")
+        unlock_btn = QPushButton("Desbloquear Teclado y Mouse")
+        unlock_btn.setObjectName("success")
         unlock_btn.clicked.connect(self.input_unlock_requested.emit)
         btn_row.addWidget(unlock_btn)
+        btn_row.addStretch()
         if_layout.addLayout(btn_row)
         layout.addWidget(input_frame)
 
-        # -- Energía --
+        # Gestion de Energia
         power_frame = QFrame()
-        power_frame.setStyleSheet("QFrame { border: 1px solid #f38ba8; border-radius: 6px; padding: 4px; }")
+        power_frame.setStyleSheet("QFrame { border: 1px solid #45475a; border-radius: 6px; padding: 10px; }")
         pf_layout = QVBoxLayout(power_frame)
-        pf_layout.addWidget(QLabel("⚡  Gestión de Energía"))
+        pf_layout.addWidget(QLabel("Gestion de Energia:"))
 
         countdown_row = QHBoxLayout()
-        countdown_row.addWidget(QLabel("Cuenta regresiva (seg):"))
+        countdown_row.addWidget(QLabel("Cuenta regresiva:"))
         self._countdown_spin = QSpinBox()
         self._countdown_spin.setRange(5, 300)
         self._countdown_spin.setValue(30)
+        self._countdown_spin.setSuffix(" segundos")
         countdown_row.addWidget(self._countdown_spin)
         countdown_row.addStretch()
         pf_layout.addLayout(countdown_row)
 
-        shutdown_btn = QPushButton("🔴 Apagar Cliente")
+        shutdown_btn = QPushButton("Apagar Cliente Remoto")
         shutdown_btn.setObjectName("danger")
         shutdown_btn.clicked.connect(self._confirm_shutdown)
         pf_layout.addWidget(shutdown_btn)
@@ -662,7 +704,7 @@ class ControlTab(QWidget):
         seconds = self._countdown_spin.value()
         reply = QMessageBox.question(
             self, "Confirmar Apagado",
-            f"¿Apagar el cliente con {seconds} segundos de cuenta regresiva?",
+            f"¿Desea apagar el cliente remoto con una cuenta regresiva de {seconds} segundos?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -670,11 +712,11 @@ class ControlTab(QWidget):
 
     def update_lock_state(self, locked: bool) -> None:
         if locked:
-            self._lock_state_label.setText("Estado: 🔒 Bloqueado")
-            self._lock_state_label.setStyleSheet("color: #f38ba8; font-weight: bold;")
+            self._lock_state_label.setText("Estado actual: BLOQUEADO")
+            self._lock_state_label.setStyleSheet("color: #f38ba8; font-weight: bold; font-size: 14px;")
         else:
-            self._lock_state_label.setText("Estado: 🔓 Desbloqueado")
-            self._lock_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+            self._lock_state_label.setText("Estado actual: DESBLOQUEADO")
+            self._lock_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 14px;")
 
 
 # ---------------------------------------------------------------------------
@@ -682,10 +724,7 @@ class ControlTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class NetworkTab(QWidget):
-    """Pestaña de control de red (bloqueo de dominios e ICMP).
-
-    Requisito: 9.1-9.3, 9.7-9.8, 10.1-10.2, 10.6-10.7.
-    """
+    """Pestaña de control de red (bloqueo de dominios e ICMP)."""
     domain_block_requested = pyqtSignal(str)
     domain_unblock_requested = pyqtSignal(str)
     ping_disable_requested = pyqtSignal()
@@ -699,61 +738,60 @@ class NetworkTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # -- Bloqueo de dominios --
+        # Dominios
         dom_frame = QFrame()
-        dom_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 4px; }")
+        dom_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 8px; }")
         df_layout = QVBoxLayout(dom_frame)
-        df_layout.addWidget(QLabel("🌐  Bloqueo de Dominios Web"))
+        df_layout.addWidget(QLabel("Bloqueo de Sitios Web (Dominios):"))
 
         self._domain_list = QListWidget()
         df_layout.addWidget(self._domain_list)
 
         input_row = QHBoxLayout()
         self._domain_input = QLineEdit()
-        self._domain_input.setPlaceholderText("example.com")
+        self._domain_input.setPlaceholderText("ejemplo: facebook.com o youtube.com")
         input_row.addWidget(self._domain_input)
-        add_btn = QPushButton("Agregar Dominio")
+
+        add_btn = QPushButton("Bloquear Dominio")
+        add_btn.setObjectName("danger")
         add_btn.clicked.connect(self._add_domain)
         input_row.addWidget(add_btn)
-        remove_btn = QPushButton("Quitar Dominio")
+
+        remove_btn = QPushButton("Desbloquear Seleccionado")
         remove_btn.clicked.connect(self._remove_domain)
         input_row.addWidget(remove_btn)
         df_layout.addLayout(input_row)
         layout.addWidget(dom_frame)
 
-        # -- Control ICMP --
+        # ICMP
         icmp_frame = QFrame()
-        icmp_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 4px; }")
+        icmp_frame.setStyleSheet("QFrame { border: 1px solid #313244; border-radius: 6px; padding: 8px; }")
         if_layout = QVBoxLayout(icmp_frame)
-        if_layout.addWidget(QLabel("📡  Control de Ping (ICMP)"))
+        if_layout.addWidget(QLabel("Control de Respuesta ICMP (Ping):"))
 
-        self._icmp_state_label = QLabel("Estado: Ping Permitido")
-        self._icmp_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+        self._icmp_state_label = QLabel("Estado actual: Ping Permitido")
+        self._icmp_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 13px;")
         if_layout.addWidget(self._icmp_state_label)
 
         icmp_row = QHBoxLayout()
-        deny_btn = QPushButton("🚫 Denegar Ping")
+        deny_btn = QPushButton("Denegar Ping")
+        deny_btn.setObjectName("danger")
         deny_btn.clicked.connect(self.ping_disable_requested.emit)
         icmp_row.addWidget(deny_btn)
-        allow_btn = QPushButton("✅ Permitir Ping")
+
+        allow_btn = QPushButton("Permitir Ping")
+        allow_btn.setObjectName("success")
         allow_btn.clicked.connect(self.ping_enable_requested.emit)
         icmp_row.addWidget(allow_btn)
+        icmp_row.addStretch()
         if_layout.addLayout(icmp_row)
         layout.addWidget(icmp_frame)
-        layout.addStretch()
 
-    def _validate_domain(self, domain: str) -> bool:
-        pattern = re.compile(
-            r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\Z"
-        )
-        return bool(pattern.match(domain))
+        layout.addStretch()
 
     def _add_domain(self) -> None:
         domain = self._domain_input.text().strip()
         if not domain:
-            return
-        if not self._validate_domain(domain):
-            QMessageBox.warning(self, "Dominio Inválido", f"'{domain}' no es un dominio válido.")
             return
         self._domain_input.clear()
         self.domain_block_requested.emit(domain)
@@ -764,20 +802,16 @@ class NetworkTab(QWidget):
             self.domain_unblock_requested.emit(item.text())
             self._domain_list.takeItem(self._domain_list.row(item))
 
-    def update_blocklist(self, domains: list[str]) -> None:
-        self._domain_list.clear()
-        self._domain_list.addItems(domains)
-
     def add_domain_to_list(self, domain: str) -> None:
         self._domain_list.addItem(domain)
 
     def update_icmp_state(self, blocked: bool) -> None:
         if blocked:
-            self._icmp_state_label.setText("Estado: 🚫 Ping Denegado")
-            self._icmp_state_label.setStyleSheet("color: #f38ba8; font-weight: bold;")
+            self._icmp_state_label.setText("Estado actual: PING DENEGADO")
+            self._icmp_state_label.setStyleSheet("color: #f38ba8; font-weight: bold; font-size: 13px;")
         else:
-            self._icmp_state_label.setText("Estado: ✅ Ping Permitido")
-            self._icmp_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+            self._icmp_state_label.setText("Estado actual: PING PERMITIDO")
+            self._icmp_state_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 13px;")
 
 
 # ---------------------------------------------------------------------------
@@ -785,11 +819,8 @@ class NetworkTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class LogTab(QWidget):
-    """Pestaña de visualización del Action_Log del servidor.
-
-    Requisito: 5.1, 5.4, 5.5.
-    """
-    export_requested = pyqtSignal(str)   # filepath
+    """Pestaña de registro de auditoria."""
+    export_requested = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -798,14 +829,13 @@ class LogTab(QWidget):
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        # Filtros
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Cliente:"))
         self._client_filter = QComboBox()
         self._client_filter.addItem("Todos")
         filter_row.addWidget(self._client_filter)
 
-        filter_row.addWidget(QLabel("Acción:"))
+        filter_row.addWidget(QLabel("Accion:"))
         self._action_filter = QComboBox()
         self._action_filter.addItem("Todas")
         filter_row.addWidget(self._action_filter)
@@ -814,15 +844,14 @@ class LogTab(QWidget):
         filter_btn.clicked.connect(self._apply_filter)
         filter_row.addWidget(filter_btn)
 
-        export_btn = QPushButton("Exportar Log")
+        export_btn = QPushButton("Exportar Registro...")
         export_btn.clicked.connect(self._export)
         filter_row.addWidget(export_btn)
         filter_row.addStretch()
         layout.addLayout(filter_row)
 
-        # Tabla
         self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Timestamp", "Cliente", "Acción", "Descripción"])
+        self._table.setHorizontalHeaderLabels(["Timestamp", "Cliente", "Accion", "Descripcion"])
         self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self._table.setAlternatingRowColors(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -843,21 +872,18 @@ class LogTab(QWidget):
             self._table.setRowHidden(row, not show)
 
     def _export(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Exportar Log", "", "Texto (*.txt)")
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar Registro", "", "Texto (*.txt)")
         if path:
             self.export_requested.emit(path)
 
     def add_log_entry(self, timestamp: str, client: str, action: str, description: str) -> None:
-        """Agrega una fila a la tabla de log."""
         row = self._table.rowCount()
         self._table.insertRow(row)
         for col, text in enumerate([timestamp, client, action, description]):
             item = QTableWidgetItem(text)
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._table.setItem(row, col, item)
         self._table.scrollToBottom()
 
-        # Actualizar filtros
         if client not in [self._client_filter.itemText(i) for i in range(self._client_filter.count())]:
             self._client_filter.addItem(client)
         if action not in [self._action_filter.itemText(i) for i in range(self._action_filter.count())]:
@@ -869,10 +895,7 @@ class LogTab(QWidget):
 # ---------------------------------------------------------------------------
 
 class MainWindow(QMainWindow):
-    """Ventana principal del servidor de administración remota.
-
-    Requisito: 15.1, 15.2, 15.10, 17.1, 17.2, 17.3.
-    """
+    """Ventana principal del servidor de monitoreo y control."""
 
     def __init__(
         self,
@@ -885,7 +908,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle("Monitor Remoto — Servidor")
+        self.setWindowTitle("Monitor Remoto - Servidor de Administracion")
         self.resize(1280, 800)
 
         central = QWidget()
@@ -894,12 +917,12 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Panel lateral de clientes
+        # Panel lateral
         self.client_panel = ClientPanel()
         self.client_panel.client_selected.connect(self._on_client_selected)
         main_layout.addWidget(self.client_panel)
 
-        # Área de pestañas
+        # Pestanas de control
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
 
@@ -910,14 +933,14 @@ class MainWindow(QMainWindow):
         self.network_tab = NetworkTab()
         self.log_tab = LogTab()
 
-        self.tabs.addTab(self.screen_tab, "🖥  Pantalla")
-        self.tabs.addTab(self.chat_tab, "💬  Chat")
-        self.tabs.addTab(self.files_tab, "📁  Archivos")
-        self.tabs.addTab(self.control_tab, "🎮  Control")
-        self.tabs.addTab(self.network_tab, "🌐  Red")
-        self.tabs.addTab(self.log_tab, "📋  Log")
+        self.tabs.addTab(self.screen_tab, "Pantalla")
+        self.tabs.addTab(self.chat_tab, "Chat")
+        self.tabs.addTab(self.files_tab, "Archivos")
+        self.tabs.addTab(self.control_tab, "Control")
+        self.tabs.addTab(self.network_tab, "Red")
+        self.tabs.addTab(self.log_tab, "Registro")
 
-        # Conectar señales de las pestañas
+        # Conexiones
         self.screen_tab.screen_start_requested.connect(self._on_screen_start)
         self.screen_tab.screen_stop_requested.connect(self._on_screen_stop)
         self.chat_tab.message_sent.connect(self._on_chat_send)
@@ -949,7 +972,7 @@ class MainWindow(QMainWindow):
         self._send("screen_stop", {})
 
     def _on_chat_send(self, text: str) -> None:
-        self._send("chat_message", {"message": text})
+        self._send("chat_message", {"message": text, "sender": "Servidor"})
 
     def _on_send_file(self, filepath: str) -> None:
         if self._send_cmd and self._selected_client_id:
@@ -983,12 +1006,8 @@ class MainWindow(QMainWindow):
         if self._send_cmd:
             self._send_cmd("_server", "_export_log", {"filepath": filepath})
 
-    # ------------------------------------------------------------------
-    # Actualizaciones desde el hilo de red (thread-safe via QTimer)
-    # ------------------------------------------------------------------
-
     def handle_message(self, client_id: str, message: dict) -> None:
-        """Despacha un mensaje del cliente a la pestaña correspondiente."""
+        """Despacha un mensaje entrante de la red a la interfaz."""
         msg_type = message.get("type", "")
         payload = message.get("payload", {})
 
@@ -1006,8 +1025,11 @@ class MainWindow(QMainWindow):
                 self.log_tab.add_log_entry(
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     session.hostname, "CONEXION",
-                    f"Conectado desde {session.ip_address}"
+                    f"Cliente conectado desde {session.ip_address}",
                 )
+                # Auto-seleccionar primer cliente si no habia ninguno seleccionado
+                if self._selected_client_id is None:
+                    self.client_panel.select_slot(session.slot_index)
 
         elif msg_type == "_internal_disconnected":
             slot_index = payload.get("slot_index", -1)
@@ -1017,25 +1039,43 @@ class MainWindow(QMainWindow):
                 self.screen_tab.reset()
 
         elif msg_type == "screen_frame":
+            # Actualizar miniatura del slot correspondiente
+            for s in self.client_panel._slots:
+                if s.get_client_id() == client_id:
+                    self.client_panel.update_thumbnail(s.slot_index, payload.get("data", ""))
+                    break
+            # Si esta seleccionado, mostrar en la pestana principal de pantalla
             if client_id == self._selected_client_id:
                 self.screen_tab.display_frame(payload.get("data", ""))
 
         elif msg_type == "client_metrics":
-            # Actualizar métricas en el slot del cliente
-            for session in []:  # se llena desde connection_manager
-                pass
+            # Actualizar metricas en el slot
+            for s in self.client_panel._slots:
+                if s.get_client_id() == client_id:
+                    s._cpu_label.setText(f"CPU: {payload.get('cpu_percent', '--')}%")
+                    s._ram_label.setText(f"RAM: {payload.get('memory_percent', '--')}%")
+                    break
 
         elif msg_type == "chat_message":
-            if client_id == self._selected_client_id:
-                self.chat_tab.add_message(
-                    payload.get("hostname", "Cliente"),
-                    payload.get("message", "")
-                )
+            sender_name = payload.get("hostname", "Cliente")
+            msg_text = payload.get("message", "")
+            # Mostrar en el chat si es el cliente actual o no hay ninguno seleccionado
+            if client_id == self._selected_client_id or self._selected_client_id is None:
+                self.chat_tab.add_message(sender_name, msg_text)
+            self.log_tab.add_log_entry(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                sender_name, "CHAT", msg_text,
+            )
 
         elif msg_type == "command_ack":
             action = payload.get("action", "")
             success = payload.get("success", False)
+            msg = payload.get("message", "")
             if action == "input_lock":
                 self.control_tab.update_lock_state(success)
             elif action == "input_unlock":
                 self.control_tab.update_lock_state(not success)
+            self.log_tab.add_log_entry(
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Cliente", action.upper(), msg if msg else f"Exito: {success}",
+            )
