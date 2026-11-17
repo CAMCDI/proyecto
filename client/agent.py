@@ -14,6 +14,7 @@ import base64
 import hashlib
 import logging
 import os
+import ssl
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -34,10 +35,7 @@ __all__ = ["ClientAgent"]
 
 logger = logging.getLogger("client.agent")
 
-# Intervalo de envío de métricas en segundos.
 METRICS_INTERVAL: float = 3.0
-
-# Directorio de recepción de archivos por defecto.
 DEFAULT_RECEIVE_DIR: str = str(Path.home() / "Descargas")
 CHUNK_SIZE: int = 64 * 1024
 
@@ -69,27 +67,24 @@ class ClientAgent:
         self._client_name = client_name
         self._receive_dir = receive_dir
 
-        # Estado de conexión.
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
         self._client_id: Optional[str] = None
         self._server_info: dict = {}
+        self._last_error: str = ""
 
-        # Módulos.
         self._screen_capture = ScreenCapture()
         self._executor = CommandExecutor()
         self._watchdog: Optional[ConnectionWatchdog] = None
 
-        # Callbacks para la UI.
         self._on_chat_received: Optional[Callable[[str, str], None]] = None
         self._on_shutdown_countdown: Optional[Callable[[int], None]] = None
         self._on_connected: Optional[Callable[[dict], None]] = None
-        self._on_disconnected: Optional[Callable[[], None]] = None
+        self._on_disconnected: Optional[Callable[[str], None]] = None
         self._on_file_received: Optional[Callable[[str], None]] = None
         self._on_input_state_changed: Optional[Callable[[bool], None]] = None
 
-        # Transferencia de archivos entrantes y salientes.
         self._file_buffers: dict[str, dict] = {}
         self._pending_acks: dict[str, asyncio.Event] = {}
         self._pending_responses: dict[str, asyncio.Queue] = {}
@@ -110,10 +105,6 @@ class ClientAgent:
     def executor(self) -> CommandExecutor:
         return self._executor
 
-    # ------------------------------------------------------------------
-    # Registro de callbacks
-    # ------------------------------------------------------------------
-
     def on_chat_received(self, callback: Callable[[str, str], None]) -> None:
         self._on_chat_received = callback
 
@@ -123,7 +114,7 @@ class ClientAgent:
     def on_connected(self, callback: Callable[[dict], None]) -> None:
         self._on_connected = callback
 
-    def on_disconnected(self, callback: Callable[[], None]) -> None:
+    def on_disconnected(self, callback: Callable[[str], None]) -> None:
         self._on_disconnected = callback
 
     def on_file_received(self, callback: Callable[[str], None]) -> None:
@@ -137,15 +128,42 @@ class ClientAgent:
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
-        """Establece la conexión TLS con el servidor y autentica."""
+        """Establece la conexión TLS con el servidor y autentica con timeout seguro."""
+        logger.info("Intentando conectar al servidor en %s:%s...", self._host, self._port)
+        self._last_error = ""
+
         try:
-            self._reader, self._writer = await asyncio.open_connection(
-                self._host, self._port, ssl=self._ssl_ctx,
+            # Timeout explícito de 8 segundos para evitar quedarse esperando eternamente
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    self._host, self._port, ssl=self._ssl_ctx,
+                ),
+                timeout=8.0,
             )
+        except asyncio.TimeoutError:
+            self._last_error = (
+                f"Tiempo de espera agotado al conectar a {self._host}:{self._port}.\n"
+                "Verifique que la IP sea correcta y que el firewall del servidor permita el puerto 5555."
+            )
+            logger.error(self._last_error)
+            return False
+        except ConnectionRefusedError:
+            self._last_error = (
+                f"Conexion rechazada en {self._host}:{self._port}.\n"
+                "El servidor no parece estar ejecutandose en esa IP o puerto."
+            )
+            logger.error(self._last_error)
+            return False
+        except ssl.SSLError as exc:
+            self._last_error = f"Error de certificados TLS/SSL: {exc}"
+            logger.error(self._last_error)
+            return False
         except Exception as exc:
-            logger.error("Error de conexión al servidor %s:%s: %s", self._host, self._port, exc)
+            self._last_error = f"Error de red al conectar a {self._host}:{self._port}: {exc}"
+            logger.error(self._last_error)
             return False
 
+        logger.info("Conexion TCP/TLS establecida. Enviando client_hello...")
         os_info = get_system_info()
         hello_payload = {
             "token": self._auth_token,
@@ -159,22 +177,25 @@ class ClientAgent:
             )
             await self._writer.drain()
         except OSError as exc:
-            logger.error("Error enviando client_hello: %s", exc)
+            self._last_error = f"Error enviando datos iniciales: {exc}"
+            logger.error(self._last_error)
             return False
 
         try:
             response = await asyncio.wait_for(
-                Protocol.read_message(self._reader), timeout=15.0
+                Protocol.read_message(self._reader), timeout=10.0
             )
         except Exception as exc:
-            logger.error("Timeout o error esperando server_hello: %s", exc)
+            self._last_error = f"Timeout esperando respuesta de autenticacion: {exc}"
+            logger.error(self._last_error)
             return False
 
         if response is None or response.get("type") != "server_hello":
-            reason = "Sin respuesta"
+            reason = "Sin respuesta del servidor"
             if response and response.get("type") == "auth_failed":
-                reason = response.get("payload", {}).get("reason", "Autenticación fallida")
-            logger.error("Autenticación rechazada por el servidor: %s", reason)
+                reason = response.get("payload", {}).get("reason", "Autenticacion fallida")
+            self._last_error = f"Autenticacion rechazada: {reason}"
+            logger.error(self._last_error)
             return False
 
         payload = response.get("payload", {})
@@ -182,29 +203,25 @@ class ClientAgent:
         self._server_info = payload.get("server_info", {})
         self._connected = True
 
-        logger.info("Conectado con éxito al servidor '%s' (id: %s)", self.hostname, self._client_id)
+        logger.info("Autenticado con exito ante el servidor '%s' (id: %s)", self.hostname, self._client_id)
 
         if self._on_connected:
             self._on_connected(self._server_info)
 
         return True
 
-    # ------------------------------------------------------------------
-    # Bucle principal
-    # ------------------------------------------------------------------
-
     async def run(self) -> None:
-        """Ejecuta el ciclo de vida completo del agente cliente."""
+        """Ejecuta el ciclo de vida del cliente."""
         if not await self.connect():
             if self._on_disconnected:
-                self._on_disconnected()
+                self._on_disconnected(self._last_error)
             return
 
         self._watchdog = ConnectionWatchdog(
             is_connected=lambda: self._connected,
             is_input_locked=lambda: self._executor.is_input_locked,
             emergency_unlock=self._executor.emergency_unlock,
-            on_disconnect=self._on_disconnected,
+            on_disconnect=lambda: self._on_disconnected("Conexion perdida con el servidor") if self._on_disconnected else None,
         )
         await self._watchdog.start()
 
@@ -219,7 +236,6 @@ class ClientAgent:
             await self.disconnect()
 
     async def _message_loop(self) -> None:
-        """Lee y despacha mensajes del servidor continuamente."""
         while self._connected:
             try:
                 message = await asyncio.wait_for(
@@ -232,7 +248,7 @@ class ClientAgent:
                 continue
 
             if message is None:
-                logger.info("Conexión cerrada por el servidor")
+                logger.info("Conexion cerrada por el servidor")
                 break
 
             if not Protocol.validate_message(message):
@@ -243,11 +259,9 @@ class ClientAgent:
         self._connected = False
 
     async def _dispatch_message(self, message: dict) -> None:
-        """Despacha un mensaje recibido al handler correspondiente."""
         msg_type = message.get("type", "")
         payload = message.get("payload", {})
 
-        # Manejadores de respuestas de transferencia de archivos
         if msg_type == "file_chunk_ack":
             file_id = payload.get("file_id", "")
             chunk_idx = payload.get("chunk_index", 0)
@@ -287,10 +301,6 @@ class ClientAgent:
                 await handler(payload)
             except Exception as exc:
                 logger.error("Error manejando '%s': %s", msg_type, exc)
-
-    # ------------------------------------------------------------------
-    # Handlers de mensajes
-    # ------------------------------------------------------------------
 
     async def _handle_heartbeat(self, payload: dict) -> None:
         await self.send_message(MessageType.HEARTBEAT_RESPONSE, {})
@@ -431,16 +441,11 @@ class ClientAgent:
 
             del self._file_buffers[file_id]
 
-    # ------------------------------------------------------------------
-    # Envío de archivos (Cliente -> Servidor)
-    # ------------------------------------------------------------------
-
     async def send_file(
         self,
         filepath: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> bool:
-        """Envía un archivo al servidor con verificación SHA-256."""
         path = Path(filepath)
         if not path.is_file():
             return False
@@ -454,7 +459,6 @@ class ClientAgent:
         self._pending_responses[file_id] = final_queue
 
         try:
-            # 1. file_init
             await self.send_message("file_init", {
                 "file_id": file_id,
                 "filename": filename,
@@ -462,7 +466,6 @@ class ClientAgent:
                 "checksum": checksum,
             })
 
-            # 2. Esperar file_accept
             try:
                 resp = await asyncio.wait_for(final_queue.get(), timeout=20.0)
                 if resp.get("type") != "file_accept":
@@ -470,7 +473,6 @@ class ClientAgent:
             except asyncio.TimeoutError:
                 return False
 
-            # 3. Enviar chunks de 64 KB
             chunk_index = 0
             transferred = 0
 
@@ -507,7 +509,6 @@ class ClientAgent:
 
                     chunk_index += 1
 
-            # 4. Esperar confirmacion final
             try:
                 final = await asyncio.wait_for(final_queue.get(), timeout=30.0)
                 return final.get("type") == "file_complete"
@@ -516,10 +517,6 @@ class ClientAgent:
 
         finally:
             self._pending_responses.pop(file_id, None)
-
-    # ------------------------------------------------------------------
-    # Envío de mensajes y métricas
-    # ------------------------------------------------------------------
 
     async def send_message(self, msg_type, payload: dict | None = None) -> bool:
         if not self._connected or not self._writer:
@@ -559,4 +556,4 @@ class ClientAgent:
             self._reader = None
 
         if self._on_disconnected:
-            self._on_disconnected()
+            self._on_disconnected(self._last_error or "Desconectado")

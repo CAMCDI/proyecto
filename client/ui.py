@@ -1,7 +1,7 @@
 """Interfaz gráfica del cliente de monitoreo remoto.
 
 Ventana principal visible, limpia e intuitiva con chat bidireccional,
-transferencia de archivos, estado de conexión y diálogo de inicio fácil.
+transferencia de archivos, estado de conexión detallado y diálogo de inicio fácil.
 Sin emojis y con estilo profesional.
 
 Requisitos: 15.3, 15.4, 3.1, 3.3-3.8, 8.2, 2.1-2.10.
@@ -81,17 +81,13 @@ QProgressBar::chunk {
 """
 
 
-# ---------------------------------------------------------------------------
-# Diálogo de Conexión Fácil (al abrir sin argumentos CLI)
-# ---------------------------------------------------------------------------
-
 class ConnectDialog(QDialog):
     """Diálogo gráfico sencillo para conectarse al servidor."""
 
     def __init__(self, default_host: str = "192.168.1.", default_token: str = "secreto123", parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Conectar al Servidor de Monitoreo")
-        self.resize(380, 260)
+        self.resize(400, 280)
         self.setStyleSheet(STYLE_SHEET)
 
         layout = QVBoxLayout(self)
@@ -102,25 +98,21 @@ class ConnectDialog(QDialog):
         title.setStyleSheet("color: #89b4fa;")
         layout.addWidget(title)
 
-        # Host
         layout.addWidget(QLabel("Direccion IP del Servidor:"))
         self.host_input = QLineEdit(default_host)
         self.host_input.setPlaceholderText("ejemplo: 192.168.1.50")
         layout.addWidget(self.host_input)
 
-        # Token
         layout.addWidget(QLabel("Token de Autenticacion:"))
         self.token_input = QLineEdit(default_token)
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self.token_input)
 
-        # Cliente ID
         layout.addWidget(QLabel("Identificador de Cliente:"))
         self.client_id_combo = QComboBox()
         self.client_id_combo.addItems(["client1", "client2", "client3"])
         layout.addWidget(self.client_id_combo)
 
-        # Botones
         btn_row = QHBoxLayout()
         btn_cancel = QPushButton("Cancelar")
         btn_cancel.clicked.connect(self.reject)
@@ -134,8 +126,9 @@ class ConnectDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _on_connect(self) -> None:
-        if not self.host_input.text().strip():
-            QMessageBox.warning(self, "Campo requerido", "Ingrese la IP del servidor.")
+        host = self.host_input.text().strip()
+        if not host or host == "192.168.1.":
+            QMessageBox.warning(self, "Campo requerido", "Ingrese la IP completa del servidor (ejemplo: 192.168.1.50).")
             return
         if not self.token_input.text().strip():
             QMessageBox.warning(self, "Campo requerido", "Ingrese el token de autenticacion.")
@@ -149,10 +142,6 @@ class ConnectDialog(QDialog):
             self.client_id_combo.currentText(),
         )
 
-
-# ---------------------------------------------------------------------------
-# Overlay de Apagado (Pantalla Completa)
-# ---------------------------------------------------------------------------
 
 class ShutdownOverlay(QWidget):
     """Overlay de pantalla completa con cuenta regresiva de apagado."""
@@ -204,20 +193,17 @@ class ShutdownOverlay(QWidget):
             self.close()
 
 
-# ---------------------------------------------------------------------------
-# Ventana Principal del Cliente
-# ---------------------------------------------------------------------------
-
 class ClientMainWindow(QMainWindow):
     """Ventana principal visible del agente cliente."""
     message_sent = pyqtSignal(str)
     send_file_requested = pyqtSignal(str)
     disconnect_requested = pyqtSignal()
+    reconnect_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Cliente - Monitor y Administracion Remota")
-        self.resize(600, 520)
+        self.resize(640, 560)
         self.setStyleSheet(STYLE_SHEET)
         self._download_dir = str(Path.home() / "Descargas")
         self._setup_ui()
@@ -231,28 +217,38 @@ class ClientMainWindow(QMainWindow):
 
         # Barra de estado superior
         top_frame = QFrame()
-        top_frame.setStyleSheet("background-color: #181825; border: 1px solid #313244; border-radius: 8px; padding: 6px;")
-        tf_layout = QHBoxLayout(top_frame)
+        top_frame.setStyleSheet("background-color: #181825; border: 1px solid #313244; border-radius: 8px; padding: 8px;")
+        tf_layout = QVBoxLayout(top_frame)
 
-        self._status_indicator = QLabel("[Conectando...]")
+        header_row = QHBoxLayout()
+        self._status_indicator = QLabel("[CONECTANDO...]")
         self._status_indicator.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self._status_indicator.setStyleSheet("color: #fab387;")
-        tf_layout.addWidget(self._status_indicator)
+        header_row.addWidget(self._status_indicator)
 
-        self._info_label = QLabel("Servidor: -- | Cliente: --")
-        self._info_label.setStyleSheet("color: #a6adc8;")
-        tf_layout.addWidget(self._info_label)
+        header_row.addStretch()
 
-        tf_layout.addStretch()
+        self._reconnect_btn = QPushButton("Reintentar")
+        self._reconnect_btn.setObjectName("primary")
+        self._reconnect_btn.setVisible(False)
+        self._reconnect_btn.clicked.connect(self.reconnect_requested.emit)
+        header_row.addWidget(self._reconnect_btn)
 
         self._disconnect_btn = QPushButton("Desconectar")
         self._disconnect_btn.setObjectName("danger")
         self._disconnect_btn.clicked.connect(self.disconnect_requested.emit)
-        tf_layout.addWidget(self._disconnect_btn)
+        header_row.addWidget(self._disconnect_btn)
+
+        tf_layout.addLayout(header_row)
+
+        self._info_label = QLabel("Servidor: Esperando conexion...")
+        self._info_label.setStyleSheet("color: #a6adc8; font-size: 12px;")
+        self._info_label.setWordWrap(True)
+        tf_layout.addWidget(self._info_label)
 
         layout.addWidget(top_frame)
 
-        # Banner de bloqueo (visible solo si el mouse/teclado estan bloqueados)
+        # Banner de bloqueo
         self._lock_banner = QLabel("DISPOSITIVOS DE ENTRADA BLOQUEADOS POR EL ADMINISTRADOR")
         self._lock_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._lock_banner.setStyleSheet("background-color: #f38ba8; color: #11111b; font-weight: bold; padding: 6px; border-radius: 4px;")
@@ -260,7 +256,7 @@ class ClientMainWindow(QMainWindow):
         layout.addWidget(self._lock_banner)
 
         # Seccion de Chat
-        layout.addWidget(QLabel("Chat con el Administrador (Servidor):"))
+        layout.addWidget(QLabel("Chat en vivo con el Servidor:"))
         self._chat_area = QTextEdit()
         self._chat_area.setReadOnly(True)
         layout.addWidget(self._chat_area)
@@ -297,7 +293,7 @@ class ClientMainWindow(QMainWindow):
         files_btn_row.addStretch()
         ff_layout.addLayout(files_btn_row)
 
-        self._file_status_label = QLabel("Archivos recibidos se guardan en Descargas")
+        self._file_status_label = QLabel("Los archivos recibidos se guardan en Descargas")
         self._file_status_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
         ff_layout.addWidget(self._file_status_label)
 
@@ -332,14 +328,26 @@ class ClientMainWindow(QMainWindow):
         p.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
 
+    def set_connecting(self, server_host: str) -> None:
+        self._status_indicator.setText("[CONECTANDO...]")
+        self._status_indicator.setStyleSheet("color: #fab387; font-weight: bold;")
+        self._info_label.setText(f"Conectando a {server_host}:5555...")
+        self._reconnect_btn.setVisible(False)
+
     def set_connected(self, server_host: str, client_id: str) -> None:
         self._status_indicator.setText("[CONECTADO]")
         self._status_indicator.setStyleSheet("color: #a6e3a1; font-weight: bold;")
-        self._info_label.setText(f"Servidor: {server_host} | ID: {client_id}")
+        self._info_label.setText(f"Servidor: {server_host} | Cliente: {client_id}")
+        self._reconnect_btn.setVisible(False)
+        self.add_chat_message("Sistema", f"Conectado exitosamente al servidor {server_host}")
 
-    def set_disconnected(self) -> None:
+    def set_disconnected(self, reason: str = "") -> None:
         self._status_indicator.setText("[DESCONECTADO]")
         self._status_indicator.setStyleSheet("color: #f38ba8; font-weight: bold;")
+        self._reconnect_btn.setVisible(True)
+        msg = reason if reason else "Conexion cerrada."
+        self._info_label.setText(f"Estado: {msg}")
+        self.add_chat_message("Error", msg)
 
     def set_input_locked(self, locked: bool) -> None:
         self._lock_banner.setVisible(locked)
@@ -350,10 +358,6 @@ class ClientMainWindow(QMainWindow):
         self.add_chat_message("Sistema", f"Archivo recibido del servidor: {name}")
 
 
-# ---------------------------------------------------------------------------
-# Controlador UI del Cliente
-# ---------------------------------------------------------------------------
-
 class ClientUI:
     """Gestiona la ventana del cliente y notificaciones."""
 
@@ -362,20 +366,20 @@ class ClientUI:
         self._app.setStyleSheet(STYLE_SHEET)
         self.window = ClientMainWindow()
         self._shutdown_overlay: Optional[ShutdownOverlay] = None
-
-        # Mostrar la ventana principal de inmediato
         self.window.show()
+
+    def set_connecting(self, server_host: str) -> None:
+        self.window.set_connecting(server_host)
 
     def set_connected(self, server_info: dict, hostname: str, client_id: str) -> None:
         srv_name = server_info.get("hostname", "Servidor")
         self.window.set_connected(srv_name, client_id)
 
-    def set_disconnected(self) -> None:
-        self.window.set_disconnected()
+    def set_disconnected(self, reason: str = "") -> None:
+        self.window.set_disconnected(reason)
 
     def show_chat_message(self, sender: str, message: str) -> None:
         self.window.add_chat_message(sender, message)
-        # Traer al frente si estaba oculta
         self.window.raise_()
         self.window.activateWindow()
 

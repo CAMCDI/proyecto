@@ -913,9 +913,41 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setSpacing(0)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Barra superior con la IP del servidor para el usuario
+        self._top_bar = QFrame()
+        self._top_bar.setStyleSheet("background-color: #181825; border-bottom: 1px solid #313244; padding: 6px 12px;")
+        tb_layout = QHBoxLayout(self._top_bar)
+        tb_layout.setContentsMargins(12, 6, 12, 6)
+
+        title_lbl = QLabel("MONITOR REMOTO - SERVIDOR")
+        title_lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        title_lbl.setStyleSheet("color: #89b4fa;")
+        tb_layout.addWidget(title_lbl)
+
+        tb_layout.addSpacing(20)
+
+        self._server_ip_label = QLabel("IP del Servidor para Clientes: Consultando...")
+        self._server_ip_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 13px;")
+        tb_layout.addWidget(self._server_ip_label)
+
+        tb_layout.addStretch()
+
+        help_lbl = QLabel("Puerto: 5555 | Token por defecto: secreto123")
+        help_lbl.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        tb_layout.addWidget(help_lbl)
+
+        root_layout.addWidget(self._top_bar)
+
+        # Contenido principal (Panel lateral + Pestanas)
+        content_widget = QWidget()
+        main_layout = QHBoxLayout(content_widget)
         main_layout.setSpacing(0)
         main_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.addWidget(content_widget)
 
         # Panel lateral
         self.client_panel = ClientPanel()
@@ -953,6 +985,21 @@ class MainWindow(QMainWindow):
         self.network_tab.ping_disable_requested.connect(self._on_ping_disable)
         self.network_tab.ping_enable_requested.connect(self._on_ping_enable)
         self.log_tab.export_requested.connect(self._on_export_log)
+
+    def set_server_info(self, host: str, port: int, token: str) -> None:
+        """Actualiza la informacion de conexion en la barra superior."""
+        import socket
+        display_ip = host
+        if host in ("0.0.0.0", ""):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                display_ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                display_ip = "127.0.0.1"
+
+        self._server_ip_label.setText(f"IP del Servidor para Clientes:  {display_ip}  (Puerto: {port})")
 
     def _on_client_selected(self, client_id: str) -> None:
         self._selected_client_id = client_id

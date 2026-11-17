@@ -186,6 +186,7 @@ class ServerApp:
         self._app.setApplicationName("Monitor Remoto - Servidor")
 
         self._window = MainWindow(send_command_callback=self._send_command)
+        self._window.set_server_info(self._host, self._port, "")
         self._window.show()
 
         self._thread = threading.Thread(target=self._run_asyncio, daemon=True)
